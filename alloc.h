@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdalign.h>
 
@@ -57,6 +58,8 @@ allocator make_bump_allocator(
     return (allocator){state, &bump_allocator_ops};
 }
 
+// Pool allocator --------------------------------------------------------------
+
 struct pool_allocator_state
 {
     unsigned char *base;
@@ -88,7 +91,6 @@ void pool_init(
 
     // Calculate how many whole blocks fit
     size_t blocks = ((size_t)(end - base)) / block_size;
-
     if (blocks == 0)
     {
         return;
@@ -103,3 +105,83 @@ void pool_init(
     }
     *(void **)current = NULL;
 }
+
+void *pool_alloc(void *state)
+{
+    struct pool_allocator_state *s = (struct pool_allocator_state *)state;
+    if (s->free_list == NULL)
+    {
+        return NULL;
+    }
+    void *block = s->free_list;
+    s->free_list = *(void **)s->free_list;
+    return block;
+}
+
+void pool_free(void *state, void *ptr)
+{
+    struct pool_allocator_state *s = (struct pool_allocator_state *)state;
+    *(void **)ptr = s->free_list;
+    s->free_list = ptr;
+}
+
+static const allocator_ops pool_allocator_ops = {pool_alloc, pool_free};
+
+allocator make_pool_allocator(
+    struct pool_allocator_state *state,
+    void *memory,
+    size_t total_size,
+    size_t block_size)
+{
+    pool_init(
+        state,
+        memory,
+        total_size,
+        block_size);
+
+    return (allocator){state, &pool_allocator_ops};
+}
+
+// Free-List allocator -----------------------------------------------------
+
+// header: size, LSB bit allocation flag, a free list pointer
+// footer: size, a free list pointer
+
+// Macros/Inline helpers for:
+// - Extracting block size (masking flags)
+// - Checking if a block is allocated
+// - Marking a block allocated / free
+
+typedef size_t block_meta;
+#define ALLOCATED ((size_t)1)
+
+#define BLOCK_SIZE(m) ((m) & ~ALLOCATED)
+#define IS_ALLOCATED(m) ((m) & ALLOCATED)
+#define MARK_ALLOCATED(m) ((m) | ALLOCATED)
+#define MARK_FREE(m) ((m) & ~ALLOCATED)
+
+// static inline helpers
+
+static inline void *payload_from_header(block_meta *h)
+{
+    return (void *)((char *)h + sizeof(block_meta));
+}
+static inline block_meta *header_from_payload(void *p)
+{
+    return ((block_meta *)(p)-1);
+}
+static inline block_meta *footer_from_header(block_meta *h)
+{
+    return (block_meta *)((char *)h + BLOCK_SIZE(*h) - sizeof(block_meta));
+}
+static inline block_meta *header_from_footer(block_meta *f)
+{
+    return (block_meta *)((char *)f - BLOCK_SIZE(*f) + sizeof(block_meta));
+}
+
+struct free_list_allocator_state
+{
+    unsigned char *heap_start;
+    block_meta *free_list;
+    unsigned char *heap_end;
+};
