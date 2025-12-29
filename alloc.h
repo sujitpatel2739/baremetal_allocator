@@ -82,7 +82,7 @@ void pool_init(
 
     // Align base to pointer alignment
     size_t alignment = alignof(void *);
-    unsigned char *base = (unsigned char *)((uintptr_t)memory + alignment - 1) & ~(alignment - 1);
+    unsigned char *base = (unsigned char *)(((uintptr_t)memory + alignment - 1) & ~(alignment - 1));
     unsigned char *end = (unsigned char *)memory + total_size;
 
     state->base = base;
@@ -159,6 +159,7 @@ typedef size_t block_meta;
 #define IS_ALLOCATED(m) ((m) & ALLOCATED)
 #define MARK_ALLOCATED(m) ((m) | ALLOCATED)
 #define MARK_FREE(m) ((m) & ~ALLOCATED)
+#define MIN_SIZE_REQ (sizeof(block_meta) + sizeof(void *) + sizeof(block_meta))
 
 // static inline helpers
 
@@ -185,3 +186,64 @@ struct free_list_allocator_state
     block_meta *free_list;
     unsigned char *heap_end;
 };
+
+void free_list_init(
+    struct free_list_allocator_state *state,
+    void *memory,
+    size_t size)
+{
+    size_t alignment = alignof(max_size_t);
+    uintptr_t aligned = ((uintptr_t)memory + alignment - 1) & ~(alignment - 1);
+    unsigned char *heap_start = (unsigned char *)aligned;
+    unsigned char *heap_end = (unsigned char *)memory + size;
+
+    // calculating and rounding of the block_size
+    size_t block_size = (size_t)(heap_end - heap_start);
+    block_size &= ~(alignment - 1);
+
+    // Minimum block size check
+    if (MIN_SIZE_REQ > block_size)
+    {
+        state->free_list = NULL;
+        return;
+    }
+
+    state->heap_start = heap_start;
+    state->heap_end = heap_start + block_size;
+    state->free_list = (block_meta *)base;
+    *state->free_list = MARK_FREE(block_size);
+    *footer_from_header(state->free_list) = MARK_FREE(block_size);
+}
+
+void *free_list_alloc(void *state, size_t size)
+{
+    struct free_list_allocator_state *fs = (struct free_list_allocator_state *)state;
+
+    size_t alignment = alignof(max_size_t);
+    size_t aligned_payload_size = (size + alignment - 1) & ~(alignment - 1);
+    size_t required_size = aligned_payload_size + sizeof(block_meta) * 2;
+
+    block_meta *curr_block = state->free_list;
+    size_t available = (size_t)BLOCK_SIZE(*curr_block) + sizeof(block_meta) * 2;
+    available &= ~(alignment - 1);
+    while (curr_block < state->heap_end && (IS_ALLOCATED(*curr_block) == 1 || available < required_size))
+    {
+        curr_block = (block_meta *)((char *)curr_block + sizeof(block_meta) + BLOCK_SIZE(*curr_block) + sizeof(block_meta));
+        available = (size_t)BLOCK_SIZE(*curr_block) + sizeof(block_meta) * 2;
+        available &= ~(alignment - 1);
+    }
+    if (curr_block == state->heap_end || available < required_size)
+    {
+        return NULL;
+    }
+
+    *curr_block = MARK_FREE(required_size);
+    *footer_from_header(curr_block) = MARK_FREE(required_size);
+    void *payload_ptr = payload_from_header(curr_block);
+
+    // if remainder > MIN_SIZE_REQ: updating the remainder block else returning whole block
+    size_t remainder = available - required_size;
+    if(remainder >= MIN_SIZE_REQ) {
+        
+    }
+}
