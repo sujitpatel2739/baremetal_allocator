@@ -217,33 +217,41 @@ void free_list_init(
 
 void *free_list_alloc(void *state, size_t size)
 {
-    struct free_list_allocator_state *fs = (struct free_list_allocator_state *)state;
+    struct free_list_allocator_state *fls = (struct free_list_allocator_state *)state;
 
     size_t alignment = alignof(max_size_t);
     size_t aligned_payload_size = (size + alignment - 1) & ~(alignment - 1);
     size_t required_size = aligned_payload_size + sizeof(block_meta) * 2;
 
-    block_meta *curr_block = state->free_list;
-    size_t available = (size_t)BLOCK_SIZE(*curr_block) + sizeof(block_meta) * 2;
-    available &= ~(alignment - 1);
-    while (curr_block < state->heap_end && (IS_ALLOCATED(*curr_block) == 1 || available < required_size))
+    block_meta *curr_block = fls->free_list;
+    size_t available = (size_t)BLOCK_SIZE(*curr_block) & ~(alignment - 1);
+    while (curr_block < fs->heap_end && (IS_ALLOCATED(*curr_block) == 1 || available < required_size))
     {
-        curr_block = (block_meta *)((char *)curr_block + sizeof(block_meta) + BLOCK_SIZE(*curr_block) + sizeof(block_meta));
-        available = (size_t)BLOCK_SIZE(*curr_block) + sizeof(block_meta) * 2;
-        available &= ~(alignment - 1);
+        curr_block = (block_meta *)((char *)curr_block + BLOCK_SIZE(*curr_block));
+        available = (size_t)BLOCK_SIZE(*curr_block) & ~(alignment - 1);
     }
-    if (curr_block == state->heap_end || available < required_size)
+    if (curr_block == fls->heap_end || available < required_size)
     {
         return NULL;
     }
 
-    *curr_block = MARK_FREE(required_size);
-    *footer_from_header(curr_block) = MARK_FREE(required_size);
     void *payload_ptr = payload_from_header(curr_block);
 
-    // if remainder > MIN_SIZE_REQ: updating the remainder block else returning whole block
     size_t remainder = available - required_size;
-    if(remainder >= MIN_SIZE_REQ) {
+    if (remainder >= MIN_SIZE_REQ)
+    {
+
+        *curr_block = MARK_ALLOCATED(required_size);
+        *footer_from_header(curr_block) = MARK_ALLOCATED(required_size);
         
+        block_meta *remain_header = (block_meta *)((char *)curr_block + BLOCK_SIZE(*curr_block));
+        *remain_header = MARK_FREE(remainder);
+        *footer_from_header(remain_header) = MARK_FREE(remainder);
     }
+    else
+    {
+        *curr_block = MARK_ALLOCATED(available);
+        *footer_from_header(curr_block) = MARK_ALLOCATED(available);
+    }
+    return payload_ptr;
 }
