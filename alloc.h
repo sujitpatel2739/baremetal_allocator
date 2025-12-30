@@ -192,7 +192,7 @@ void free_list_init(
     void *memory,
     size_t size)
 {
-    size_t alignment = alignof(max_size_t);
+    size_t alignment = alignof(max_align_t);
     uintptr_t aligned = ((uintptr_t)memory + alignment - 1) & ~(alignment - 1);
     unsigned char *heap_start = (unsigned char *)aligned;
     unsigned char *heap_end = (unsigned char *)memory + size;
@@ -212,6 +212,7 @@ void free_list_init(
     state->heap_end = heap_start + block_size;
     state->free_list = (block_meta *)base;
     *state->free_list = MARK_FREE(block_size);
+    *(void **)payload_from_header(state->free_list) = NULL;
     *footer_from_header(state->free_list) = MARK_FREE(block_size);
 }
 
@@ -219,39 +220,58 @@ void *free_list_alloc(void *state, size_t size)
 {
     struct free_list_allocator_state *fls = (struct free_list_allocator_state *)state;
 
-    size_t alignment = alignof(max_size_t);
-    size_t aligned_payload_size = (size + alignment - 1) & ~(alignment - 1);
-    size_t required_size = aligned_payload_size + sizeof(block_meta) * 2;
+    size_t alignment = alignof(max_align_t);
+    size = max(size, sizeof(void *));
+    size = (size + alignment - 1) & ~(alignment - 1);
+    size_t required_size = size + sizeof(block_meta) * 2;
 
     block_meta *curr_block = fls->free_list;
-    size_t available = (size_t)BLOCK_SIZE(*curr_block) & ~(alignment - 1);
-    while (curr_block < fs->heap_end && (IS_ALLOCATED(*curr_block) == 1 || available < required_size))
+    if (curr_block == NULL)
+        return NULL;
+
+    block_meta *prev_block = NULL;
+    size_t available = (size_t)BLOCK_SIZE(*curr_block);
+    while (curr_block != NULL && available < required_size)
     {
-        curr_block = (block_meta *)((char *)curr_block + BLOCK_SIZE(*curr_block));
-        available = (size_t)BLOCK_SIZE(*curr_block) & ~(alignment - 1);
+        prev_block = curr_block;
+        curr_block = (block_meta *)*(void **)payload_from_header(curr_block);
+        if (curr_block == NULL)
+            return NULL;
+        available = (size_t)BLOCK_SIZE(*curr_block);
     }
-    if (curr_block == fls->heap_end || available < required_size)
+    if (curr_block == NULL || available < required_size)
     {
         return NULL;
     }
 
-    void *payload_ptr = payload_from_header(curr_block);
-
     size_t remainder = available - required_size;
+    block_meta *next_free = (block_meta *)*(void **)payload_from_header(curr_block);
     if (remainder >= MIN_SIZE_REQ)
     {
 
         *curr_block = MARK_ALLOCATED(required_size);
         *footer_from_header(curr_block) = MARK_ALLOCATED(required_size);
-        
-        block_meta *remain_header = (block_meta *)((char *)curr_block + BLOCK_SIZE(*curr_block));
+
+        block_meta *remain_header = (block_meta *)((char *)curr_block + required_size);
         *remain_header = MARK_FREE(remainder);
         *footer_from_header(remain_header) = MARK_FREE(remainder);
+
+        *(void **)payload_from_header(remain_header) = next_free;
+        next_free = remain_header;
     }
     else
     {
         *curr_block = MARK_ALLOCATED(available);
         *footer_from_header(curr_block) = MARK_ALLOCATED(available);
     }
-    return payload_ptr;
+    if (prev_block == NULL)
+    {
+        fls->free_list = next_free;
+    }
+    else
+    {
+        *(void **)payload_from_header(prev_block) = next_free;
+    }
+
+    return payload_from_header(curr_block);
 }
