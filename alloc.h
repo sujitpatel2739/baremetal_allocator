@@ -326,3 +326,18 @@ void free_list_free(void *state, void *ptr)
     *(block_meta **)payload_from_header(coalesced_header) = fls->free_list;
     fls->free_list = coalesced_header;
 }
+
+static const allocator_ops free_list_allocator_ops = {free_list_alloc, free_list_free};
+
+allocator make_free_list_allocator(
+    struct free_lsit_allocator_state *state,
+    void *memory,
+    block_meta size)
+{
+    free_list_init(
+        state,
+        memory,
+        size);
+
+    return (allocator){state, &free_list_allocator_ops};
+}
