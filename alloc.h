@@ -279,66 +279,50 @@ void *free_list_alloc(void *state, size_t size)
 void free_list_free(void *state, void *ptr)
 {
     struct free_list_allocator_state *fls = (struct free_list_allocator_state *)state;
+
     block_meta *header = header_from_payload(ptr);
+    size_t size = BLOCK_SIZE(*header);
 
-    block_meta total_block_size = BLOCK_SIZE(*header);
-    *header = MARK_FREE(total_block_size);
-    *footer_from_header(header) = MARK_FREE(total_block_size);
-
-    // Ensuring (unsigned char*)header - state->heap_start >= sizeof(block_meta)
-    block_meta *left_to_relink = fls->free_list;
+    *header = MARK_FREE(size);
+    *footer_from_header(header) = MARK_FREE(size);
     block_meta *coalesced_header = header;
-    if ((char *)header - sizeof(block_meta) >= fls->heap_start)
+
+    if ((char *)header > fls->heap_start)
     {
         block_meta *prev_footer = (block_meta *)((char *)header - sizeof(block_meta));
-        block_meta *prev_header = header_from_footer(prev_footer);
-        if (IS_ALLOCATED(*prev_footer) == 0 && (char *)prev_header + BLOCK_SIZE(*prev_header) == (char *)header)
+
+        if (!IS_ALLOCATED(*prev_footer))
         {
-            total_block_size += BLOCK_SIZE(*prev_header);
-            while (left_to_relink != NULL && *(block_meta **)payload_from_header(left_to_relink) != prev_header)
+            block_meta *prev_header = header_from_footer(prev_footer);
+            if ((char *)prev_header + BLOCK_SIZE(*prev_header) == (char *)header)
             {
-                left_to_relink = *(block_meta **)payload_from_header(left_to_relink);
+                block_meta **p = &fls->free_list;
+                while (*p && *p != prev_header)
+                    p = (block_meta **)payload_from_header(*p);
+                if (*p == prev_header)
+                    *p = *(block_meta **)payload_from_header(prev_header);
+                size += BLOCK_SIZE(*prev_header);
+                coalesced_header = prev_header;
             }
         }
-        coalesced_header = prev_header;
     }
 
-    // Ensuring (char *)header + total_block_size + sizeof(block_meta) <= heap_end
-    block_meta *right_to_relink = fls->free_list;
-    block_meta *coalesced_footer = footer_from_header(header);
-    if ((char *)header + BLOCK_SIZE(*header) + sizeof(block_meta) <= heap_end)
+    if ((char *)coalesced_header + size + sizeof(block_meta) <= fls->heap_end)
     {
-        block_meta *next_header = (block_meta *)((char *)header + BLOCK_SIZE(*header));
-        block_meta *next_footer = footer_from_header(next_header);
-        if (IS_ALLOCATED(*next_header) == 0 && (char *)header + BLOCK_SIZE(*header) == (char *)next_header)
+        block_meta *next_header = (block_meta *)((char *)coalesced_header + size);
+        if (!IS_ALLOCATED(*next_header) && (char *)coalesced_header + size == (char *)next_header)
         {
-            total_block_size += BLOCK_SIZE(*next_header);
-            while (right_to_relink != NULL && *(block_meta **)payload_from_header(next_header) != right_to_relink)
-            {
-                right_to_relink = *(block_meta **)payload_from_header(right_to_relink);
-            }
+            block_meta **p = &fls->free_list;
+            while (*p && *p != next_header)
+                p = (block_meta **)payload_from_header(*p);
+            if (*p == next_header)
+                *p = *(block_meta **)payload_from_header(next_header);
+            size += BLOCK_SIZE(*next_header);
         }
-        coalesced_footer = next_footer;
     }
 
-    // Updating fls->free_list & coalesced block
-    *coalesced_header = MARK_FREE(total_block_size);
-    *coalesced_footer = MARK_FREE(total_block_size);
-    if (left_to_relink == NULL && right_to_relink == NULL)
-    {
-        fls->free_list = coalesced_header;
-        *(block_meta **)payload_from_header(coalesced_header) = right_to_relink;
-    }
-    else if (left_to_relink == NULL)
-    {
-
-        *(block_meta **)payload_from_header(coalesced_header) = right_to_relink;
-        fls->free_list = coalesced_header;
-    }
-    else
-    {
-        *(block_meta **)payload_from_header(left_to_relink) = right_to_relink;
-        *(block_meta **)payload_from_header(coalesced_header) = fls->free_list;
-        fls->free_list = coalesced_header;
-    }
+    *coalesced_header = MARK_FREE(size);
+    *footer_from_header(coalesced_header) = MARK_FREE(size);
+    *(block_meta **)payload_from_header(coalesced_header) = fls->free_list;
+    fls->free_list = coalesced_header;
 }
