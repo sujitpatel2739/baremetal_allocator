@@ -234,7 +234,7 @@ void *free_list_alloc(void *state, size_t size)
     while (curr_block != NULL && available < required_size)
     {
         prev_block = curr_block;
-        curr_block = (block_meta *)*(void **)payload_from_header(curr_block);
+        curr_block = (block_meta *)*(block_meta **)payload_from_header(curr_block);
         if (curr_block == NULL)
             return NULL;
         available = (size_t)BLOCK_SIZE(*curr_block);
@@ -245,7 +245,7 @@ void *free_list_alloc(void *state, size_t size)
     }
 
     size_t remainder = available - required_size;
-    block_meta *next_free = (block_meta *)*(void **)payload_from_header(curr_block);
+    block_meta *next_free = (block_meta *)*(block_meta **)payload_from_header(curr_block);
     if (remainder >= MIN_SIZE_REQ)
     {
 
@@ -256,7 +256,7 @@ void *free_list_alloc(void *state, size_t size)
         *remain_header = MARK_FREE(remainder);
         *footer_from_header(remain_header) = MARK_FREE(remainder);
 
-        *(void **)payload_from_header(remain_header) = next_free;
+        *(block_meta **)payload_from_header(remain_header) = next_free;
         next_free = remain_header;
     }
     else
@@ -270,8 +270,60 @@ void *free_list_alloc(void *state, size_t size)
     }
     else
     {
-        *(void **)payload_from_header(prev_block) = next_free;
+        *(block_meta **)payload_from_header(prev_block) = next_free;
     }
 
     return payload_from_header(curr_block);
+}
+
+void free_list_free(void *state, void *ptr)
+{
+    struct free_list_allocator_state *fls = (struct free_list_allocator_state *)state;
+    block_meta *header = header_from_payload(ptr);
+
+    block_meta total_block_size = BLOCK_SIZE(*header);
+    *header = MARK_FREE(total_block_size);
+    *footer_from_header(header) = MARK_FREE(total_block_size);
+
+    // Ensuring (unsigned char*)header - state->heap_start >= sizeof(block_meta)
+    block_meta *left_to_relink = fls->free_list;
+    block_meta *coalesced_header = header;
+    if ((char *)header - sizeof(block_meta) >= fls->heap_start)
+    {
+        block_meta *prev_footer = (block_meta *)((char *)header - sizeof(block_meta));
+        block_meta *prev_header = header_from_footer(prev_footer);
+        if (IS_ALLOCATED(*prev_footer) == 0 && (char *)prev_header + BLOCK_SIZE(*prev_header) == (char *)header)
+        {
+            total_block_size += BLOCK_SIZE(*prev_header);
+            while (left_to_relink != NULL && *(block_meta **)payload_from_header(left_to_relink) != prev_header && left_to_relink != prev_header)
+            {
+                left_to_relink = *(block_meta **)payload_from_header(left_to_relink);
+            }
+        }
+        coalesced_header = prev_header;
+    }
+
+    // Ensuring (char *)header + total_block_size + sizeof(block_meta) <= heap_end
+    block_meta *right_to_relink = fls->free_list;
+    block_meta *coalesced_footer = footer_from_header(header);
+    if ((char *)header + BLOCK_SIZE(*header) + sizeof(block_meta) <= heap_end)
+    {
+        block_meta *next_header = (block_meta *)((char *)header + BLOCK_SIZE(*header));
+        block_meta *next_footer = footer_from_header(next_header);
+        if (IS_ALLOCATED(*next_header) == 0 && (char *)header + BLOCK_SIZE(*header) == (char *)next_header)
+        {
+            total_block_size += BLOCK_SIZE(*next_header);
+            while (right_to_relink != NULL && *(block_meta **)payload_from_header(next_header) != right_to_relink)
+            {
+                right_to_relink = *(block_meta **)payload_from_header(right_to_relink);
+            }
+        }
+        coalesced_footer = next_footer;
+    }
+
+    // Updating fls->free_list & coalesced block
+    *coalesced_header = MARK_FREE(total_block_size);
+    *coalesced_footer = MARK_FREE(total_block_size);
+    *(block_meta **)header = *(block_meta **)fls->free_list;
+    fls->free_list = header;
 }
